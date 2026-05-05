@@ -1,0 +1,51 @@
+cache = {}  # context_key → list of {rank, asin, name}
+for _, ctx in unique_contexts.iterrows():
+    key = tuple(ctx)
+    context = {
+        "location":    ctx.get("reviewLocation", "unknown"),
+        "time_of_day": ctx.get("time_of_day",    "unknown"),
+        "device":      ctx.get("device",         "unknown"),
+        "intent":      ctx.get("intent",         "unknown"),
+        "is_weekend":  int(ctx.get("is_weekend", 0)),
+        "reviewer_id": "unknown",
+    }
+    _, _, scores = bandit.predict(context, all_products)
+    scored = sorted(zip(all_products, scores), key=lambda x: x[1], reverse=True)
+    cache[key] = [
+        {
+            "rank": rank,
+            "asin": p["ASIN"],
+            "name": str(p.get("name_words", "")).title()[:60],
+        }
+        for rank, (p, _) in enumerate(scored[:args.top_k], start=1)
+    ]
+
+print(f"  Done. {len(cache):,} context entries cached.")
+
+
+# ── Expand cache → one row per reviewer per rank ───────────────────────────────
+
+print("\nAssigning recommendations to reviewers...")
+cache_rows = []
+for key, recs in cache.items():
+    for rec in recs:
+        cache_rows.append({**dict(zip(CONTEXT_COLS, key)), **rec})
+
+cache_df = pd.DataFrame(cache_rows)
+result   = (
+    reviewer_context[["reviewerID"] + CONTEXT_COLS]
+    .merge(cache_df, on=CONTEXT_COLS, how="left")
+)[["reviewerID", "rank", "asin", "name"]]
+
+
+# ── Save ──────────────────────────────────────────────────────────────────────
+
+out_path = f"{args.output_dir}/recommendations.csv"
+result.to_csv(out_path, index=False)
+
+print(f"\nDone.")
+print(f"  Reviewers : {result['reviewerID'].nunique():,}")
+print(f"  Rows      : {len(result):,}  ({args.top_k} per reviewer)")
+print(f"  Saved to  : {out_path}")
+print(f"\nSample:")
+print(result.head(10).to_string(index=False))
